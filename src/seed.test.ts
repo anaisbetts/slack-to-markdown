@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { loadArchiveConfig, resolveStatePaths } from "./config";
 import { runCli } from "./index";
 
 const tempDirs: string[] = [];
@@ -88,11 +89,23 @@ describe("seedFromSlackArchive", () => {
         "--seed-from",
         seedDir,
         "--render-only",
-        "--exclude",
-        "house-debug",
+        "--excludes",
+        "house-debug,dont-talk-in-here",
       ],
       log: (line) => logs.push(line),
     });
+
+    // Excludes passed with --seed-from are persisted into config.json
+    const { configPath } = resolveStatePaths(outDir);
+    const savedConfig = JSON.parse(await readFile(configPath, "utf-8"));
+    expect(savedConfig).toEqual({
+      exclude: ["house-debug", "dont-talk-in-here"],
+    });
+    const reloadedConfig = await loadArchiveConfig(outDir);
+    expect(reloadedConfig.exclude).toEqual([
+      "house-debug",
+      "dont-talk-in-here",
+    ]);
 
     const day1 = await readFile(
       path.join(outDir, "general", "2026-11-18.txt"),

@@ -8,6 +8,7 @@ import {
   matchesChannelFilter,
   parseChannelTypes,
   resolveStatePaths,
+  saveArchiveExcludes,
 } from "./config";
 import { renderDirtyDays } from "./render";
 import { seedFromSlackArchive } from "./seed";
@@ -45,7 +46,10 @@ Options:
                          SQLite and re-render all historical day files.
   --render-only          Skip Slack API calls; only render dirty (or --rerender) days.
   --rerender             Mark all stored days dirty and re-render YYYY-MM-DD.txt files.
-  --exclude NAME_OR_ID   Exclude a channel by ID, Slack name, or folder name (repeatable).
+  --exclude, --excludes NAME_OR_ID
+                         Exclude channels by ID, Slack name, or folder name
+                         (repeatable or comma-separated; saved to ${CONFIG_FILE_NAME}
+                         when combined with --seed-from).
   --channel-types LIST   Comma-separated channel types
                          (default: ${DEFAULT_CHANNEL_TYPES.join(",")}).
   --lookback-days N      Rolling history lookback window in days for catching thread
@@ -103,6 +107,11 @@ export async function runCli(input: RunCliInput = {}): Promise<void> {
 
   try {
     if (options.seedFrom) {
+      if (options.exclude.length > 0 && !options.dryRun) {
+        const configPath = await saveArchiveExcludes(outputDir, config.exclude);
+        log(`Saved ${config.exclude.length} exclusion(s) to ${configPath}.`);
+      }
+
       await seedFromSlackArchive(store, {
         seedDir: path.resolve(options.seedFrom),
         config,
@@ -212,7 +221,13 @@ export function parseCliCommand(argv: readonly string[]): ParsedCliCommand {
         rerender = true;
         break;
       case "--exclude":
-        exclude.push(requireFlagValue(argv, i, arg));
+      case "--excludes":
+        for (const item of requireFlagValue(argv, i, arg).split(",")) {
+          const trimmed = item.trim();
+          if (trimmed) {
+            exclude.push(trimmed);
+          }
+        }
         i += 1;
         break;
       case "--channel-types":

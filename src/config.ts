@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -54,6 +54,26 @@ export async function loadArchiveConfig(
     channelTypes,
     lookbackDays,
   };
+}
+
+export async function saveArchiveExcludes(
+  outputDir: string,
+  excludes: readonly string[],
+): Promise<string> {
+  const { stateDir, configPath } = resolveStatePaths(outputDir);
+  const existing = await readConfigFile(configPath);
+  const mergedExcludes = dedupeStrings([
+    ...(existing.exclude ?? []),
+    ...excludes,
+  ]);
+  const updated: Partial<ArchiveConfig> = {
+    ...existing,
+    exclude: mergedExcludes,
+  };
+
+  await mkdir(stateDir, { recursive: true });
+  await writeFile(configPath, `${JSON.stringify(updated, null, 2)}\n`, "utf-8");
+  return configPath;
 }
 
 export function resolveStatePaths(outputDir: string): StatePaths {

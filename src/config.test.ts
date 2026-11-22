@@ -12,6 +12,7 @@ import {
   parseChannelTypes,
   resolveStatePaths,
   sanitizeFolderName,
+  saveArchiveExcludes,
 } from "./config";
 import type { SlackChannel } from "./types";
 
@@ -67,6 +68,32 @@ describe("config", () => {
     ]);
     expect(config.channelTypes).toEqual(["public_channel", "im"]);
     expect(config.lookbackDays).toBe(7);
+  });
+
+  test("saveArchiveExcludes writes config.json and preserves existing fields", async () => {
+    const dir = await createTempDir();
+    const { stateDir, configPath } = resolveStatePaths(dir);
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(
+      configPath,
+      JSON.stringify({ lookbackDays: 30, exclude: ["house-debug"] }),
+      "utf-8",
+    );
+
+    const savedPath = await saveArchiveExcludes(dir, [
+      "HOUSE-DEBUG",
+      "dont-talk-in-here",
+      "cadwallion (cadwallion)",
+    ]);
+    expect(savedPath).toBe(configPath);
+
+    const loaded = await loadArchiveConfig(dir);
+    expect(loaded.lookbackDays).toBe(30);
+    expect(loaded.exclude).toEqual([
+      "house-debug",
+      "dont-talk-in-here",
+      "cadwallion (cadwallion)",
+    ]);
   });
 
   test("loadArchiveConfig rejects invalid JSON or bad field types", async () => {

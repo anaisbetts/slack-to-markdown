@@ -110,6 +110,17 @@ interface SearchMessagesResponse extends SlackEnvelope {
   };
 }
 
+interface ClientCountsChannelEntry {
+  id?: string;
+  latest?: string;
+}
+
+interface ClientCountsResponse extends SlackEnvelope {
+  channels?: ClientCountsChannelEntry[];
+  mpims?: ClientCountsChannelEntry[];
+  ims?: ClientCountsChannelEntry[];
+}
+
 export class SlackClient {
   private readonly token: string;
   private readonly baseUrl: string;
@@ -303,6 +314,31 @@ export class SlackClient {
     }
 
     return activeIds;
+  }
+
+  async getClientCounts(): Promise<Map<string, string>> {
+    const response = await this.call<ClientCountsResponse>("client.counts");
+    const latestByChannel = new Map<string, string>();
+    const groups = [
+      response.channels ?? [],
+      response.mpims ?? [],
+      response.ims ?? [],
+    ];
+
+    for (const group of groups) {
+      for (const entry of group) {
+        if (!entry.id || !entry.latest) {
+          continue;
+        }
+        const tsNum = Number.parseFloat(entry.latest);
+        if (!Number.isFinite(tsNum) || tsNum <= 0) {
+          continue;
+        }
+        latestByChannel.set(entry.id, entry.latest);
+      }
+    }
+
+    return latestByChannel;
   }
 
   private async call<T extends SlackEnvelope>(

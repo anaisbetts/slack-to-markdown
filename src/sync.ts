@@ -113,29 +113,59 @@ export async function syncWorkspace(
     );
 
   let searchActiveIds = new Set<string>();
+  let clientCountsLatest = new Map<string, string>();
+
   if (!effectiveFullScan) {
-    const searchSinceMs = computeSearchSinceMs(
-      store.getMeta("last_sync_at") ?? lastFullScanIso,
-      nowMs,
-    );
-    const afterUtcDate = formatUtcDate(searchSinceMs);
+    let clientCountsOk = false;
     try {
-      searchActiveIds = await client.searchActiveChannelIds(
-        afterUtcDate,
-        Math.floor(searchSinceMs / 1_000),
-      );
-      log(
-        `Fast scan: search.messages (after:${afterUtcDate}) found ${searchActiveIds.size} active channel(s); also polling channels active within ${options.config.activeWindowDays}d and newly discovered channels.`,
-      );
+      clientCountsLatest = await client.getClientCounts();
+      clientCountsOk = true;
     } catch (error) {
       if (error instanceof SlackApiError && error.kind === "auth") {
         throw error;
       }
       const detail = error instanceof Error ? error.message : String(error);
+      log(`WARNING: client.counts unavailable (${detail}).`);
+    }
+
+    const searchSinceMs = computeSearchSinceMs(
+      store.getMeta("last_sync_at") ?? lastFullScanIso,
+      nowMs,
+    );
+    const afterUtcDate = formatUtcDate(searchSinceMs);
+    let searchOk = false;
+    try {
+      searchActiveIds = await client.searchActiveChannelIds(
+        afterUtcDate,
+        Math.floor(searchSinceMs / 1_000),
+      );
+      searchOk = true;
+    } catch (error) {
+      if (error instanceof SlackApiError && error.kind === "auth") {
+        throw error;
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      log(`WARNING: search.messages unavailable (${detail}).`);
+    }
+
+    if (!clientCountsOk && !searchOk) {
       log(
-        `WARNING: search.messages failed (${detail}); falling back to full scan.`,
+        "WARNING: both client.counts and search.messages failed; falling back to full scan.",
       );
       effectiveFullScan = true;
+    } else {
+      const signals: string[] = [];
+      if (clientCountsOk) {
+        signals.push(`client.counts (${clientCountsLatest.size} timestamps)`);
+      }
+      if (searchOk) {
+        signals.push(
+          `search.messages after:${afterUtcDate} (${searchActiveIds.size} active)`,
+        );
+      }
+      log(
+        `Fast scan using ${signals.join(" + ")}; also polling channels active within ${options.config.activeWindowDays}d and newly discovered channels.`,
+      );
     }
   } else if (!options.channelFilter) {
     log(
@@ -205,6 +235,7 @@ export async function syncWorkspace(
       !shouldPollChannelInFastMode(
         storedChannel,
         searchActiveIds,
+        clientCountsLatest,
         options.config.activeWindowDays,
         nowMs,
       )
@@ -321,6 +352,7 @@ export function shouldRunFullScan(
 export function shouldPollChannelInFastMode(
   channel: StoredChannel,
   searchActiveIds: ReadonlySet<string>,
+  clientCountsLatest: ReadonlyMap<string, string>,
   activeWindowDays: number,
   nowMs: number,
 ): boolean {
@@ -329,6 +361,16 @@ export function shouldPollChannelInFastMode(
   }
   if (searchActiveIds.has(channel.id)) {
     return true;
+  }
+  const latestFromCounts = clientCountsLatest.get(channel.id);
+  if (latestFromCounts) {
+    const latestSec = Number.parseFloat(latestFromCounts);
+    const storedSec = channel.lastMessageTs
+      ? Number.parseFloat(channel.lastMessageTs)
+      : 0;
+    if (Number.isFinite(latestSec) && latestSec > storedSec) {
+      return true;
+    }
   }
   if (!channel.lastMessageTs || activeWindowDays <= 0) {
     return false;

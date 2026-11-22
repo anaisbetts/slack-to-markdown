@@ -155,6 +155,15 @@ describe("syncWorkspace & CLI", () => {
         }
       }
 
+      if (method === "client.counts") {
+        return jsonResponse({
+          ok: true,
+          channels: [{ id: "C1", latest: day1Ts }],
+          mpims: [],
+          ims: [],
+        });
+      }
+
       if (method === "search.messages") {
         return jsonResponse({
           ok: true,
@@ -297,6 +306,10 @@ describe("syncWorkspace & CLI", () => {
         });
       }
 
+      if (method === "client.counts") {
+        return jsonResponse({ ok: true, channels: [], mpims: [], ims: [] });
+      }
+
       if (method === "search.messages") {
         return jsonResponse({
           ok: true,
@@ -376,7 +389,7 @@ describe("syncWorkspace & CLI", () => {
     store.close();
   });
 
-  test("fast scan uses search.messages + active window, skips dormant channels, runs weekly full scan, and falls back on missing_scope", async () => {
+  test("fast scan uses client.counts + search.messages + active window, skips dormant channels, runs weekly full scan, and falls back only when both fail", async () => {
     const outDir = await createTempDir();
     const day0Ms = Date.parse("2026-11-01T12:00:00Z");
     const day2Ms = Date.parse("2026-11-03T12:00:00Z");
@@ -391,9 +404,11 @@ describe("syncWorkspace & CLI", () => {
       Math.floor(Date.parse("2026-11-03T11:00:00Z") / 1_000),
     );
 
-    let phase: "initial" | "fast" | "weekly" | "search_denied" = "initial";
+    let phase: "initial" | "fast" | "counts_only" | "weekly" | "both_denied" =
+      "initial";
     const polledChannels: string[] = [];
     let searchCalls = 0;
+    let countsCalls = 0;
 
     const fetchMock: FetchLike = async (input) => {
       const url = new URL(String(input));
@@ -421,7 +436,8 @@ describe("syncWorkspace & CLI", () => {
         const channels = [
           { id: "C_ACTIVE", name: "active", is_channel: true },
           { id: "C_DORMANT", name: "dormant", is_channel: true },
-          { id: "C_WOKE", name: "woke-dm", is_im: true, user: "U1" },
+          { id: "C_WOKE_SEARCH", name: "woke-search", is_im: true, user: "U1" },
+          { id: "C_WOKE_COUNTS", name: "woke-counts", is_im: true, user: "U1" },
         ];
         if (phase === "fast") {
           channels.push({ id: "C_NEW", name: "brand-new", is_channel: true });
@@ -433,15 +449,40 @@ describe("syncWorkspace & CLI", () => {
         });
       }
 
+      if (method === "client.counts") {
+        countsCalls += 1;
+        if (phase === "both_denied") {
+          return jsonResponse({ ok: false, error: "not_allowed_token_type" });
+        }
+        return jsonResponse({
+          ok: true,
+          channels: [
+            { id: "C_ACTIVE", latest: recentMsgTs },
+            { id: "C_DORMANT", latest: oldMsgTs },
+          ],
+          mpims: [],
+          ims: [
+            { id: "C_WOKE_SEARCH", latest: oldMsgTs },
+            {
+              id: "C_WOKE_COUNTS",
+              latest:
+                phase === "fast" || phase === "counts_only"
+                  ? wokeMsgTs
+                  : oldMsgTs,
+            },
+          ],
+        });
+      }
+
       if (method === "search.messages") {
         searchCalls += 1;
-        if (phase === "search_denied") {
+        if (phase === "counts_only" || phase === "both_denied") {
           return jsonResponse({ ok: false, error: "missing_scope" });
         }
         return jsonResponse({
           ok: true,
           messages: {
-            matches: [{ ts: wokeMsgTs, channel: { id: "C_WOKE" } }],
+            matches: [{ ts: wokeMsgTs, channel: { id: "C_WOKE_SEARCH" } }],
             paging: { page: 1, pages: 1 },
           },
         });
@@ -462,7 +503,7 @@ describe("syncWorkspace & CLI", () => {
             messages: [{ ts: oldMsgTs, user: "U1", text: "old message" }],
           });
         }
-        if (channel === "C_WOKE") {
+        if (channel === "C_WOKE_SEARCH" || channel === "C_WOKE_COUNTS") {
           return jsonResponse({
             ok: true,
             messages:
@@ -486,10 +527,17 @@ describe("syncWorkspace & CLI", () => {
       nowMs: day0Ms,
       log: () => {},
     });
-    expect(polledChannels).toEqual(["C_ACTIVE", "C_DORMANT", "C_WOKE"]);
+    expect(polledChannels).toEqual([
+      "C_ACTIVE",
+      "C_DORMANT",
+      "C_WOKE_SEARCH",
+      "C_WOKE_COUNTS",
+    ]);
     expect(searchCalls).toBe(0);
+    expect(countsCalls).toBe(0);
 
-    // 2. Two days later -> fast scan via search.messages; skips C_DORMANT, polls C_ACTIVE (within 30d), C_WOKE (from search), and C_NEW (never synced)
+    // 2. Two days later -> fast scan via client.counts + search.messages:
+    //    skips C_DORMANT, polls C_ACTIVE (active window), C_WOKE_SEARCH (search), C_WOKE_COUNTS (client.counts), and C_NEW (never synced)
     phase = "fast";
     polledChannels.length = 0;
     await runCli({
@@ -500,10 +548,33 @@ describe("syncWorkspace & CLI", () => {
       nowMs: day2Ms,
       log: () => {},
     });
+    expect(countsCalls).toBe(1);
     expect(searchCalls).toBe(1);
-    expect(polledChannels).toEqual(["C_ACTIVE", "C_WOKE", "C_NEW"]);
+    expect(polledChannels).toEqual([
+      "C_ACTIVE",
+      "C_WOKE_SEARCH",
+      "C_WOKE_COUNTS",
+      "C_NEW",
+    ]);
 
-    // 3. Nine days after initial full scan (> 7d) -> weekly full scan sweeps C_DORMANT again
+    // 3. Even if search.messages fails, client.counts alone still keeps fast scan active (C_DORMANT stays skipped)
+    phase = "counts_only";
+    polledChannels.length = 0;
+    await runCli({
+      argv: [outDir],
+      env: { SLACK_TOKEN: "xoxp-test" },
+      fetchImpl: fetchMock,
+      sleepImpl: async () => {},
+      nowMs: day2Ms + 3_600_000,
+      log: () => {},
+    });
+    expect(polledChannels).toEqual([
+      "C_ACTIVE",
+      "C_WOKE_SEARCH",
+      "C_WOKE_COUNTS",
+    ]);
+
+    // 4. Nine days after initial full scan (> 7d) -> weekly full scan sweeps C_DORMANT again
     phase = "weekly";
     polledChannels.length = 0;
     await runCli({
@@ -514,11 +585,15 @@ describe("syncWorkspace & CLI", () => {
       nowMs: day9Ms,
       log: () => {},
     });
-    expect(searchCalls).toBe(1);
-    expect(polledChannels).toEqual(["C_ACTIVE", "C_DORMANT", "C_WOKE"]);
+    expect(polledChannels).toEqual([
+      "C_ACTIVE",
+      "C_DORMANT",
+      "C_WOKE_SEARCH",
+      "C_WOKE_COUNTS",
+    ]);
 
-    // 4. One day after weekly full scan, if search.messages returns missing_scope -> falls back to full scan
-    phase = "search_denied";
+    // 5. If BOTH client.counts and search.messages fail -> falls back to full scan
+    phase = "both_denied";
     polledChannels.length = 0;
     const fallbackLogs: string[] = [];
     await runCli({
@@ -529,7 +604,12 @@ describe("syncWorkspace & CLI", () => {
       nowMs: day9Ms + 86_400_000,
       log: (line) => fallbackLogs.push(line),
     });
-    expect(polledChannels).toEqual(["C_ACTIVE", "C_DORMANT", "C_WOKE"]);
+    expect(polledChannels).toEqual([
+      "C_ACTIVE",
+      "C_DORMANT",
+      "C_WOKE_SEARCH",
+      "C_WOKE_COUNTS",
+    ]);
     expect(
       fallbackLogs.some((l) => l.includes("falling back to full scan")),
     ).toBe(true);
@@ -562,10 +642,33 @@ describe("syncWorkspace & CLI", () => {
           rawJson: "{}",
         },
         new Set(),
+        new Map([["C_X", oldMsgTs]]),
         30,
         day2Ms,
       ),
     ).toBe(false);
+    expect(
+      shouldPollChannelInFastMode(
+        {
+          id: "C_X",
+          type: "public_channel",
+          slackName: "x",
+          folderName: "x",
+          purpose: "",
+          isArchived: false,
+          isUserDeleted: false,
+          dmUserId: null,
+          fullySynced: false,
+          lastMessageTs: oldMsgTs,
+          lastSyncedAt: day0Ms,
+          rawJson: "{}",
+        },
+        new Set(),
+        new Map([["C_X", wokeMsgTs]]),
+        30,
+        day2Ms,
+      ),
+    ).toBe(true);
   });
 
   test("CLI parsing handles --help and fails fast without token", async () => {

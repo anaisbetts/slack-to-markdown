@@ -65,6 +65,18 @@ describe("SlackClient", () => {
         });
       }
 
+      if (url.pathname.endsWith("/client.counts")) {
+        return jsonResponse({
+          ok: true,
+          channels: [
+            { id: "C1", latest: "1700000010.000200" },
+            { id: "C_EMPTY", latest: "0000000000.000000" },
+          ],
+          mpims: [{ id: "G1", latest: "1700000020.000300" }],
+          ims: [{ id: "D1", latest: "1700000030.000400" }],
+        });
+      }
+
       throw new Error(`Unexpected URL: ${url.toString()}`);
     };
 
@@ -82,7 +94,13 @@ describe("SlackClient", () => {
 
     const active = await client.searchActiveChannelIds("2026-11-20", 100);
     expect(Array.from(active).sort()).toEqual(["C_HOT", "C_OLD", "D_WOKE"]);
-    expect(calls.length).toBe(5);
+
+    const counts = await client.getClientCounts();
+    expect(counts.get("C1")).toBe("1700000010.000200");
+    expect(counts.get("G1")).toBe("1700000020.000300");
+    expect(counts.get("D1")).toBe("1700000030.000400");
+    expect(counts.has("C_EMPTY")).toBe(false);
+    expect(calls.length).toBe(6);
   });
 
   test("retries HTTP 429 using Retry-After header and recovers from transient 502", async () => {

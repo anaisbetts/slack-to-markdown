@@ -102,7 +102,8 @@ export async function syncWorkspace(
   stats.channelsListed = remoteChannels.length;
   log(`Found ${remoteChannels.length} channels.`);
 
-  const lastFullScanIso = store.getMeta("last_full_scan_at");
+  const lastFullScanIso =
+    store.getMeta("last_full_scan_at") ?? store.getMeta("seeded_at");
   let effectiveFullScan =
     Boolean(options.channelFilter) ||
     shouldRunFullScan(

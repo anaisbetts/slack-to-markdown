@@ -1,8 +1,13 @@
 {
-  "name": "kreuzakt",
+  "name": "slack-to-markdown",
   "version": "0.1.0",
   "private": true,
+  "bin": {
+    "slack-to-markdown": "./src/index.ts"
+  },
   "scripts": {
+    "start": "bun run src/index.ts",
+    "test": "bun test",
     "check": "biome check && bunx tsc --noEmit",
     "f": "biome check --write --unsafe"
   },

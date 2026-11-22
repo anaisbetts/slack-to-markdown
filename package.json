@@ -1,0 +1,16 @@
+{
+  "name": "kreuzakt",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "check": "biome check && bunx tsc --noEmit",
+    "f": "biome check --write --unsafe"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.8",
+    "@types/react": "^19.3.0",
+    "bun-types": "^1.4.5",
+    "typescript": "^7.0.2"
+  }
+}

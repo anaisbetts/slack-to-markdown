@@ -1,9 +1,10 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync } from "node:fs";
+import { chmodSync, mkdirSync } from "node:fs";
 import path from "node:path";
 
 import type {
   DirtyDay,
+  SavedAuthState,
   SlackChannel,
   SlackChannelType,
   SlackMessage,
@@ -14,6 +15,12 @@ import type {
 } from "./types";
 
 const SCHEMA_VERSION = "1";
+
+const META_SLACK_TOKEN = "slack_token";
+const META_AUTH_USER_ID = "auth_user_id";
+const META_AUTH_USER = "auth_user";
+const META_WORKSPACE_TEAM_ID = "workspace_team_id";
+const META_WORKSPACE_TEAM = "workspace_team";
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -156,6 +163,13 @@ export class ArchiveStore {
     }
 
     this.db = new Database(dbPath, { create: true });
+    if (dbPath !== ":memory:") {
+      try {
+        chmodSync(dbPath, 0o600);
+      } catch {
+        // Ignore chmod errors on filesystems that do not support POSIX modes.
+      }
+    }
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA synchronous = NORMAL;");
     this.db.exec("PRAGMA foreign_keys = ON;");
@@ -186,6 +200,40 @@ export class ArchiveStore {
         "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
       )
       .run(key, value);
+  }
+
+  getSavedAuth(): SavedAuthState | null {
+    const token = this.getMeta(META_SLACK_TOKEN);
+    const userId = this.getMeta(META_AUTH_USER_ID);
+    const user = this.getMeta(META_AUTH_USER);
+    const teamId = this.getMeta(META_WORKSPACE_TEAM_ID);
+    const team = this.getMeta(META_WORKSPACE_TEAM);
+
+    if (!token && !userId && !user && !teamId && !team) {
+      return null;
+    }
+
+    return { token, userId, user, teamId, team };
+  }
+
+  saveAuth(state: Partial<SavedAuthState>): void {
+    this.transaction(() => {
+      if (state.token) {
+        this.setMeta(META_SLACK_TOKEN, state.token);
+      }
+      if (state.userId) {
+        this.setMeta(META_AUTH_USER_ID, state.userId);
+      }
+      if (state.user) {
+        this.setMeta(META_AUTH_USER, state.user);
+      }
+      if (state.teamId) {
+        this.setMeta(META_WORKSPACE_TEAM_ID, state.teamId);
+      }
+      if (state.team) {
+        this.setMeta(META_WORKSPACE_TEAM, state.team);
+      }
+    });
   }
 
   upsertUsers(users: readonly SlackUser[], nowMs = Date.now()): number {

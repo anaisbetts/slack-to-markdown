@@ -12,6 +12,7 @@ import type {
   ArchiveConfig,
   Logger,
   SeedStats,
+  SlackAuthInfo,
   SlackChannel,
   SlackMessage,
   SlackUser,
@@ -133,6 +134,17 @@ export async function seedFromSlackArchive(
   }
 
   if (!options.dryRun) {
+    const archiveMeta = await readOptionalJsonObject<{ auth?: SlackAuthInfo }>(
+      path.join(options.seedDir, "slack-archive.json"),
+    );
+    if (archiveMeta?.auth) {
+      store.saveAuth({
+        userId: archiveMeta.auth.user_id ?? null,
+        user: archiveMeta.auth.user ?? null,
+        teamId: archiveMeta.auth.team_id ?? null,
+        team: archiveMeta.auth.team ?? null,
+      });
+    }
     store.setMeta("seeded_from", path.resolve(options.seedDir));
     store.setMeta("seeded_at", new Date(nowMs).toISOString());
   }
@@ -219,6 +231,25 @@ async function readOptionalJsonArray<T>(targetPath: string): Promise<T[]> {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return [];
+    }
+    throw error;
+  }
+}
+
+async function readOptionalJsonObject<T>(
+  targetPath: string,
+): Promise<T | null> {
+  try {
+    const content = await readFile(targetPath, "utf-8");
+    const parsed: unknown = JSON.parse(content);
+    return typeof parsed === "object" &&
+      parsed !== null &&
+      !Array.isArray(parsed)
+      ? (parsed as T)
+      : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return null;
     }
     throw error;
   }

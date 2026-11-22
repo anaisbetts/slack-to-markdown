@@ -3,8 +3,10 @@ import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { resolveStatePaths } from "./config";
 import { parseCliCommand, runCli } from "./index";
 import type { FetchLike } from "./slack-client";
+import { ArchiveStore } from "./store";
 import { computeHistoryOldest } from "./sync";
 
 const tempDirs: string[] = [];
@@ -54,7 +56,13 @@ describe("syncWorkspace & CLI", () => {
       const method = url.pathname.split("/").pop();
 
       if (method === "auth.test") {
-        return jsonResponse({ ok: true, user: "ani", team: "myteam" });
+        return jsonResponse({
+          ok: true,
+          user_id: "U_ANI",
+          user: "ani",
+          team_id: "T_HOME",
+          team: "myteam",
+        });
       }
 
       if (method === "users.list") {
@@ -222,6 +230,126 @@ describe("syncWorkspace & CLI", () => {
       '[Thread from 2026-11-10 by Alice Smith: "Initial thread post"]',
     );
     expect(day3Content).toContain("  > e: Late reply from external user");
+  });
+
+  test("saves token & user in SQLite, allows same-user token rotation, reuses saved token, and blows up on user mismatch", async () => {
+    const outDir = await createTempDir();
+    let usersListCalls = 0;
+
+    const fetchMock: FetchLike = async (input, init) => {
+      const url = new URL(String(input));
+      const method = url.pathname.split("/").pop();
+      const authHeader =
+        (init?.headers as Record<string, string> | undefined)?.Authorization ??
+        "";
+      const token = authHeader.replace(/^Bearer\s+/i, "");
+
+      if (method === "auth.test") {
+        if (token === "xoxp-user1-v1" || token === "xoxp-user1-v2") {
+          return jsonResponse({
+            ok: true,
+            user_id: "U_USER1",
+            user: "alice",
+            team_id: "T_TEAM1",
+            team: "team1",
+          });
+        }
+        if (token === "xoxp-user2") {
+          return jsonResponse({
+            ok: true,
+            user_id: "U_USER2",
+            user: "bob",
+            team_id: "T_TEAM1",
+            team: "team1",
+          });
+        }
+        return jsonResponse({ ok: false, error: "invalid_auth" });
+      }
+
+      if (method === "users.list") {
+        usersListCalls += 1;
+        return jsonResponse({
+          ok: true,
+          members: [],
+          response_metadata: { next_cursor: "" },
+        });
+      }
+
+      if (method === "conversations.list") {
+        return jsonResponse({
+          ok: true,
+          channels: [],
+          response_metadata: { next_cursor: "" },
+        });
+      }
+
+      throw new Error(`Unexpected method: ${method}`);
+    };
+
+    // 1. First run saves token + user identity in SQLite
+    await runCli({
+      argv: [outDir],
+      env: { SLACK_TOKEN: "xoxp-user1-v1" },
+      fetchImpl: fetchMock,
+      sleepImpl: async () => {},
+      log: () => {},
+    });
+
+    const { dbPath } = resolveStatePaths(outDir);
+    let store = new ArchiveStore(dbPath);
+    expect(store.getSavedAuth()).toEqual({
+      token: "xoxp-user1-v1",
+      userId: "U_USER1",
+      user: "alice",
+      teamId: "T_TEAM1",
+      team: "team1",
+    });
+    store.close();
+
+    // 2. Subsequent run without SLACK_TOKEN reuses saved token from SQLite
+    await runCli({
+      argv: [outDir],
+      env: {},
+      fetchImpl: fetchMock,
+      sleepImpl: async () => {},
+      log: () => {},
+    });
+    expect(usersListCalls).toBe(2);
+
+    // 3. Different token for the SAME user succeeds and updates saved token
+    const rotationLogs: string[] = [];
+    await runCli({
+      argv: [outDir],
+      env: { SLACK_TOKEN: "xoxp-user1-v2" },
+      fetchImpl: fetchMock,
+      sleepImpl: async () => {},
+      log: (line) => rotationLogs.push(line),
+    });
+    expect(rotationLogs.some((l) => l.includes("Updating saved token"))).toBe(
+      true,
+    );
+
+    store = new ArchiveStore(dbPath);
+    expect(store.getSavedAuth()?.token).toBe("xoxp-user1-v2");
+    store.close();
+
+    // 4. Different token for a DIFFERENT user blows up before touching Slack data or SQLite
+    const callsBeforeMismatch = usersListCalls;
+    await expect(
+      runCli({
+        argv: [outDir],
+        env: { SLACK_TOKEN: "xoxp-user2" },
+        fetchImpl: fetchMock,
+        sleepImpl: async () => {},
+        log: () => {},
+      }),
+    ).rejects.toThrow("Slack token user mismatch");
+    expect(usersListCalls).toBe(callsBeforeMismatch);
+
+    store = new ArchiveStore(dbPath);
+    expect(store.getSavedAuth()?.token).toBe("xoxp-user1-v2");
+    expect(store.getSavedAuth()?.userId).toBe("U_USER1");
+    store.close();
   });
 
   test("CLI parsing handles --help and fails fast without token", async () => {

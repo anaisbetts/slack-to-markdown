@@ -98,6 +98,14 @@ export interface SlackAuthInfo {
   url?: string;
 }
 
+export interface SavedAuthState {
+  token: string | null;
+  userId: string | null;
+  user: string | null;
+  teamId: string | null;
+  team: string | null;
+}
+
 export interface StoredUser {
   id: string;
   name: string;

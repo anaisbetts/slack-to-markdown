@@ -38,6 +38,8 @@ Optional persistent config is loaded from <output-dir>/${STATE_DIR_NAME}/${CONFI
 
 Token:
   Provide via --token <xoxp-...> or the SLACK_TOKEN environment variable.
+  Saved to SQLite alongside the authenticated user ID so subsequent runs can
+  reuse it and verify that rotated tokens still belong to the same Slack user.
   Not required when using --render-only.
 
 Options:
@@ -95,17 +97,19 @@ export async function runCli(input: RunCliInput = {}): Promise<void> {
     lookbackDays: options.lookbackDays,
   });
 
-  const token = (options.token ?? env.SLACK_TOKEN ?? "").trim();
-  if (!options.renderOnly && token.length === 0) {
-    throw new Error(
-      "Missing Slack token. Pass --token <token> or set SLACK_TOKEN (or use --render-only).",
-    );
-  }
-
+  const explicitToken = (options.token ?? env.SLACK_TOKEN ?? "").trim();
   const { dbPath } = resolveStatePaths(outputDir);
   const store = new ArchiveStore(dbPath);
 
   try {
+    const savedToken = store.getSavedAuth()?.token ?? "";
+    const token = explicitToken || savedToken;
+
+    if (!options.renderOnly && token.length === 0) {
+      throw new Error(
+        "Missing Slack token. Pass --token <token> or set SLACK_TOKEN (or use --render-only).",
+      );
+    }
     if (options.seedFrom) {
       if (options.exclude.length > 0 && !options.dryRun) {
         const configPath = await saveArchiveExcludes(outputDir, config.exclude);
@@ -152,6 +156,7 @@ export async function runCli(input: RunCliInput = {}): Promise<void> {
 
       const syncStats = await syncWorkspace(client, store, {
         outputDir,
+        token,
         config,
         channelFilter: options.channelFilter,
         dryRun: options.dryRun,

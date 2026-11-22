@@ -10,6 +10,8 @@ import { type ArchiveStore, pickNewerTs } from "./store";
 import type {
   ArchiveConfig,
   Logger,
+  SavedAuthState,
+  SlackAuthInfo,
   SlackChannel,
   SlackMessage,
   StoredChannel,
@@ -22,6 +24,7 @@ const USER_MENTION_PATTERN = /<@([A-Z0-9]+)(?:\|[^>]+)?>/g;
 
 export interface SyncOptions {
   outputDir: string;
+  token: string;
   config: ArchiveConfig;
   channelFilter?: string;
   dryRun?: boolean;
@@ -54,17 +57,27 @@ export async function syncWorkspace(
   };
 
   const auth = await client.authTest();
+  if (!auth.user_id) {
+    throw new Error(
+      "Slack auth.test response did not include user_id; cannot verify token identity.",
+    );
+  }
+
+  const savedAuth = store.getSavedAuth();
+  verifyTokenIdentity(savedAuth, options.token, auth, log);
+
   log(
-    `Authenticated to Slack workspace ${auth.team ?? "(unknown)"} as ${auth.user ?? auth.user_id ?? "(unknown)"}`,
+    `Authenticated to Slack workspace ${auth.team ?? "(unknown)"} as ${auth.user ?? auth.user_id} (${auth.user_id})`,
   );
 
   if (!options.dryRun) {
-    if (auth.team) {
-      store.setMeta("workspace_team", auth.team);
-    }
-    if (auth.team_id) {
-      store.setMeta("workspace_team_id", auth.team_id);
-    }
+    store.saveAuth({
+      token: options.token,
+      userId: auth.user_id,
+      user: auth.user ?? null,
+      teamId: auth.team_id ?? null,
+      team: auth.team ?? null,
+    });
   }
 
   log("Syncing users via users.list...");
@@ -220,6 +233,54 @@ export async function syncWorkspace(
   }
 
   return stats;
+}
+
+export function verifyTokenIdentity(
+  savedAuth: SavedAuthState | null,
+  incomingToken: string,
+  auth: SlackAuthInfo,
+  log: Logger = noopLog,
+): void {
+  if (!savedAuth) {
+    return;
+  }
+
+  const tokenChanged =
+    savedAuth.token !== null && savedAuth.token !== incomingToken;
+  const expectedUserId = savedAuth.userId;
+  const expectedTeamId = savedAuth.teamId;
+
+  const userMismatch =
+    expectedUserId !== null && auth.user_id !== expectedUserId;
+  const teamMismatch =
+    expectedTeamId !== null &&
+    Boolean(auth.team_id) &&
+    auth.team_id !== expectedTeamId;
+
+  if (userMismatch || teamMismatch) {
+    const savedUserLabel = savedAuth.user
+      ? `${savedAuth.user} (${savedAuth.userId ?? "unknown"})`
+      : (savedAuth.userId ?? "unknown");
+    const savedTeamLabel = savedAuth.team
+      ? `${savedAuth.team} (${savedAuth.teamId ?? "unknown"})`
+      : (savedAuth.teamId ?? "unknown");
+    const actualUserLabel = auth.user
+      ? `${auth.user} (${auth.user_id ?? "unknown"})`
+      : (auth.user_id ?? "unknown");
+    const actualTeamLabel = auth.team
+      ? `${auth.team} (${auth.team_id ?? "unknown"})`
+      : (auth.team_id ?? "unknown");
+
+    throw new Error(
+      `Slack token user mismatch: archive belongs to user ${savedUserLabel} in workspace ${savedTeamLabel}, but the provided token authenticates as ${actualUserLabel} in workspace ${actualTeamLabel}. Refusing to sync.`,
+    );
+  }
+
+  if (tokenChanged) {
+    log(
+      `Slack token changed; verified it still represents user ${auth.user ?? auth.user_id} (${auth.user_id}). Updating saved token.`,
+    );
+  }
 }
 
 export function computeHistoryOldest(

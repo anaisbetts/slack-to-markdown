@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { loadArchiveConfig, resolveStatePaths } from "./config";
 import { runCli } from "./index";
+import { ArchiveStore } from "./store";
 
 const tempDirs: string[] = [];
 
@@ -42,6 +43,19 @@ describe("seedFromSlackArchive", () => {
           purpose: { value: "Group messaging with: @alice @bob" },
         },
       ]),
+      "utf-8",
+    );
+
+    await writeFile(
+      path.join(seedDir, "slack-archive.json"),
+      JSON.stringify({
+        auth: {
+          user_id: "U1",
+          user: "alice",
+          team_id: "T1",
+          team: "TestTeam",
+        },
+      }),
       "utf-8",
     );
 
@@ -96,7 +110,7 @@ describe("seedFromSlackArchive", () => {
     });
 
     // Excludes passed with --seed-from are persisted into config.json
-    const { configPath } = resolveStatePaths(outDir);
+    const { configPath, dbPath } = resolveStatePaths(outDir);
     const savedConfig = JSON.parse(await readFile(configPath, "utf-8"));
     expect(savedConfig).toEqual({
       exclude: ["house-debug", "dont-talk-in-here"],
@@ -106,6 +120,17 @@ describe("seedFromSlackArchive", () => {
       "house-debug",
       "dont-talk-in-here",
     ]);
+
+    // Auth user/workspace from slack-archive.json is saved into SQLite
+    const seededStore = new ArchiveStore(dbPath);
+    expect(seededStore.getSavedAuth()).toEqual({
+      token: null,
+      userId: "U1",
+      user: "alice",
+      teamId: "T1",
+      team: "TestTeam",
+    });
+    seededStore.close();
 
     const day1 = await readFile(
       path.join(outDir, "general", "2026-11-18.txt"),

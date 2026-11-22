@@ -6,6 +6,8 @@ export const DEFAULT_CHANNEL_TYPES: readonly SlackChannelType[] = [
 ];
 
 export const DEFAULT_LOOKBACK_DAYS = 14;
+export const DEFAULT_ACTIVE_WINDOW_DAYS = 30;
+export const DEFAULT_FULL_SCAN_INTERVAL_DAYS = 7;
 export const STATE_DIR_NAME = ".slack-to-markdown";
 export const DB_FILE_NAME = "archive.sqlite";
 export const CONFIG_FILE_NAME = "config.json";
@@ -155,6 +157,8 @@ export interface ArchiveConfig {
   exclude: string[];
   channelTypes: SlackChannelType[];
   lookbackDays: number;
+  activeWindowDays: number;
+  fullScanIntervalDays: number;
 }
 
 export interface CliOptions {
@@ -163,9 +167,12 @@ export interface CliOptions {
   seedFrom?: string;
   renderOnly: boolean;
   rerender: boolean;
+  fullScan: boolean;
   exclude: string[];
   channelTypes?: SlackChannelType[];
   lookbackDays?: number;
+  activeWindowDays?: number;
+  fullScanIntervalDays?: number;
   channelFilter?: string;
   dryRun: boolean;
   quiet: boolean;
@@ -191,11 +198,13 @@ export interface SeedStats {
 }
 
 export interface SyncStats {
+  scanMode: "fast" | "full";
   usersSynced: number;
   channelsListed: number;
   channelsSynced: number;
   channelsSkippedArchived: number;
   channelsSkippedExcluded: number;
+  channelsSkippedInactive: number;
   channelsErrored: number;
   messagesUpserted: number;
   threadsFetched: number;

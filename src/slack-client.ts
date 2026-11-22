@@ -18,6 +18,8 @@ const USERS_PAGE_LIMIT = 1_000;
 const CHANNELS_PAGE_LIMIT = 200;
 const HISTORY_PAGE_LIMIT = 200;
 const REPLIES_PAGE_LIMIT = 200;
+const SEARCH_PAGE_LIMIT = 100;
+const SEARCH_MAX_PAGES = 50;
 
 const FATAL_AUTH_ERRORS = new Set([
   "invalid_auth",
@@ -89,6 +91,23 @@ interface ConversationsHistoryResponse extends SlackEnvelope {
 interface ConversationsRepliesResponse extends SlackEnvelope {
   messages?: SlackMessage[];
   has_more?: boolean;
+}
+
+interface SearchMatch {
+  ts?: string;
+  channel?: {
+    id?: string;
+  };
+}
+
+interface SearchMessagesResponse extends SlackEnvelope {
+  messages?: {
+    matches?: SearchMatch[];
+    paging?: {
+      page?: number;
+      pages?: number;
+    };
+  };
 }
 
 export class SlackClient {
@@ -238,6 +257,52 @@ export class SlackClient {
     } while (cursor);
 
     return replies;
+  }
+
+  async searchActiveChannelIds(
+    afterUtcDate: string,
+    cutoffEpochSec?: number,
+  ): Promise<Set<string>> {
+    const activeIds = new Set<string>();
+    const query = `after:${afterUtcDate}`;
+    let page = 1;
+    let totalPages = 1;
+
+    while (page <= totalPages && page <= SEARCH_MAX_PAGES) {
+      const response = await this.call<SearchMessagesResponse>(
+        "search.messages",
+        {
+          query,
+          sort: "timestamp",
+          sort_dir: "desc",
+          count: SEARCH_PAGE_LIMIT,
+          page,
+        },
+      );
+
+      const matches = response.messages?.matches ?? [];
+      let reachedCutoff = false;
+      for (const match of matches) {
+        if (match.channel?.id) {
+          activeIds.add(match.channel.id);
+        }
+        if (cutoffEpochSec !== undefined && match.ts) {
+          const tsSec = Number.parseFloat(match.ts);
+          if (Number.isFinite(tsSec) && tsSec < cutoffEpochSec) {
+            reachedCutoff = true;
+          }
+        }
+      }
+
+      if (reachedCutoff || matches.length === 0) {
+        break;
+      }
+
+      totalPages = response.messages?.paging?.pages ?? page;
+      page += 1;
+    }
+
+    return activeIds;
   }
 
   private async call<T extends SlackEnvelope>(

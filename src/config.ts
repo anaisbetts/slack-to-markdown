@@ -5,7 +5,9 @@ import {
   type ArchiveConfig,
   CONFIG_FILE_NAME,
   DB_FILE_NAME,
+  DEFAULT_ACTIVE_WINDOW_DAYS,
   DEFAULT_CHANNEL_TYPES,
+  DEFAULT_FULL_SCAN_INTERVAL_DAYS,
   DEFAULT_LOOKBACK_DAYS,
   type SlackChannel,
   type SlackChannelType,
@@ -48,11 +50,21 @@ export async function loadArchiveConfig(
     fileConfig.channelTypes ?? [...DEFAULT_CHANNEL_TYPES];
   const lookbackDays =
     overrides.lookbackDays ?? fileConfig.lookbackDays ?? DEFAULT_LOOKBACK_DAYS;
+  const activeWindowDays =
+    overrides.activeWindowDays ??
+    fileConfig.activeWindowDays ??
+    DEFAULT_ACTIVE_WINDOW_DAYS;
+  const fullScanIntervalDays =
+    overrides.fullScanIntervalDays ??
+    fileConfig.fullScanIntervalDays ??
+    DEFAULT_FULL_SCAN_INTERVAL_DAYS;
 
   return {
     exclude,
     channelTypes,
     lookbackDays,
+    activeWindowDays,
+    fullScanIntervalDays,
   };
 }
 
@@ -279,6 +291,32 @@ async function readConfigFile(
       );
     }
     result.lookbackDays = parsed.lookbackDays;
+  }
+
+  if (parsed.activeWindowDays !== undefined) {
+    if (
+      typeof parsed.activeWindowDays !== "number" ||
+      !Number.isInteger(parsed.activeWindowDays) ||
+      parsed.activeWindowDays < 0
+    ) {
+      throw new Error(
+        `Config "activeWindowDays" in ${configPath} must be a non-negative integer`,
+      );
+    }
+    result.activeWindowDays = parsed.activeWindowDays;
+  }
+
+  if (parsed.fullScanIntervalDays !== undefined) {
+    if (
+      typeof parsed.fullScanIntervalDays !== "number" ||
+      !Number.isInteger(parsed.fullScanIntervalDays) ||
+      parsed.fullScanIntervalDays < 0
+    ) {
+      throw new Error(
+        `Config "fullScanIntervalDays" in ${configPath} must be a non-negative integer`,
+      );
+    }
+    result.fullScanIntervalDays = parsed.fullScanIntervalDays;
   }
 
   return result;

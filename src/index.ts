@@ -19,7 +19,9 @@ import {
   type CliOptions,
   CONFIG_FILE_NAME,
   DB_FILE_NAME,
+  DEFAULT_ACTIVE_WINDOW_DAYS,
   DEFAULT_CHANNEL_TYPES,
+  DEFAULT_FULL_SCAN_INTERVAL_DAYS,
   DEFAULT_LOOKBACK_DAYS,
   type Logger,
   type ParsedCliCommand,
@@ -48,6 +50,7 @@ Options:
                          SQLite and re-render all historical day files.
   --render-only          Skip Slack API calls; only render dirty (or --rerender) days.
   --rerender             Mark all stored days dirty and re-render YYYY-MM-DD.txt files.
+  --full-scan            Poll every non-archived channel instead of fast discovery.
   --exclude, --excludes NAME_OR_ID
                          Exclude channels by ID, Slack name, or folder name
                          (repeatable or comma-separated; saved to ${CONFIG_FILE_NAME}
@@ -56,6 +59,10 @@ Options:
                          (default: ${DEFAULT_CHANNEL_TYPES.join(",")}).
   --lookback-days N      Rolling history lookback window in days for catching thread
                          replies and edits (default: ${DEFAULT_LOOKBACK_DAYS}).
+  --active-window-days N Always poll channels with activity in the last N days during
+                         fast scans (default: ${DEFAULT_ACTIVE_WINDOW_DAYS}).
+  --full-scan-days N     Automatically run a full channel sweep every N days
+                         (default: ${DEFAULT_FULL_SCAN_INTERVAL_DAYS}).
   --channel NAME_OR_ID   Limit sync/seed/render to a single channel.
   --dry-run              Preview work without writing files or mutating SQLite.
   --quiet, -q            Suppress progress output.
@@ -95,6 +102,8 @@ export async function runCli(input: RunCliInput = {}): Promise<void> {
     exclude: options.exclude,
     channelTypes: options.channelTypes,
     lookbackDays: options.lookbackDays,
+    activeWindowDays: options.activeWindowDays,
+    fullScanIntervalDays: options.fullScanIntervalDays,
   });
 
   const explicitToken = (options.token ?? env.SLACK_TOKEN ?? "").trim();
@@ -158,6 +167,7 @@ export async function runCli(input: RunCliInput = {}): Promise<void> {
         outputDir,
         token,
         config,
+        fullScan: options.fullScan,
         channelFilter: options.channelFilter,
         dryRun: options.dryRun,
         log,
@@ -166,7 +176,7 @@ export async function runCli(input: RunCliInput = {}): Promise<void> {
 
       accumulateRenderStats(renderTotals, syncStats.render);
       log(
-        `Sync complete: ${syncStats.channelsSynced} channels synced, ${syncStats.channelsSkippedArchived} archived skipped, ${syncStats.channelsSkippedExcluded} excluded, ${syncStats.channelsErrored} errors, ${syncStats.messagesUpserted} messages, ${syncStats.threadsFetched} threads.`,
+        `Sync complete (${syncStats.scanMode} scan): ${syncStats.channelsSynced} channels synced, ${syncStats.channelsSkippedInactive} inactive skipped, ${syncStats.channelsSkippedArchived} archived skipped, ${syncStats.channelsSkippedExcluded} excluded, ${syncStats.channelsErrored} errors, ${syncStats.messagesUpserted} messages, ${syncStats.threadsFetched} threads.`,
       );
     }
 
@@ -197,9 +207,12 @@ export function parseCliCommand(argv: readonly string[]): ParsedCliCommand {
   let seedFrom: string | undefined;
   let renderOnly = false;
   let rerender = false;
+  let fullScan = false;
   const exclude: string[] = [];
   let channelTypes: SlackChannelType[] | undefined;
   let lookbackDays: number | undefined;
+  let activeWindowDays: number | undefined;
+  let fullScanIntervalDays: number | undefined;
   let channelFilter: string | undefined;
   let dryRun = false;
   let quiet = false;
@@ -225,6 +238,9 @@ export function parseCliCommand(argv: readonly string[]): ParsedCliCommand {
       case "--rerender":
         rerender = true;
         break;
+      case "--full-scan":
+        fullScan = true;
+        break;
       case "--exclude":
       case "--excludes":
         for (const item of requireFlagValue(argv, i, arg).split(",")) {
@@ -241,6 +257,20 @@ export function parseCliCommand(argv: readonly string[]): ParsedCliCommand {
         break;
       case "--lookback-days":
         lookbackDays = parseNonNegativeInt(requireFlagValue(argv, i, arg), arg);
+        i += 1;
+        break;
+      case "--active-window-days":
+        activeWindowDays = parseNonNegativeInt(
+          requireFlagValue(argv, i, arg),
+          arg,
+        );
+        i += 1;
+        break;
+      case "--full-scan-days":
+        fullScanIntervalDays = parseNonNegativeInt(
+          requireFlagValue(argv, i, arg),
+          arg,
+        );
         i += 1;
         break;
       case "--channel":
@@ -275,9 +305,12 @@ export function parseCliCommand(argv: readonly string[]): ParsedCliCommand {
     seedFrom,
     renderOnly,
     rerender,
+    fullScan,
     exclude,
     channelTypes,
     lookbackDays,
+    activeWindowDays,
+    fullScanIntervalDays,
     channelFilter,
     dryRun,
     quiet,

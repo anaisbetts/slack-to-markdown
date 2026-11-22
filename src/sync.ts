@@ -20,12 +20,15 @@ import type {
 } from "./types";
 
 const SECONDS_PER_DAY = 86_400;
+const MS_PER_DAY = SECONDS_PER_DAY * 1_000;
+const SEARCH_BUFFER_DAYS = 2;
 const USER_MENTION_PATTERN = /<@([A-Z0-9]+)(?:\|[^>]+)?>/g;
 
 export interface SyncOptions {
   outputDir: string;
   token: string;
   config: ArchiveConfig;
+  fullScan?: boolean;
   channelFilter?: string;
   dryRun?: boolean;
   log?: Logger;
@@ -40,11 +43,13 @@ export async function syncWorkspace(
   const log = options.log ?? noopLog;
   const nowMs = options.nowMs ?? Date.now();
   const stats: SyncStats = {
+    scanMode: "fast",
     usersSynced: 0,
     channelsListed: 0,
     channelsSynced: 0,
     channelsSkippedArchived: 0,
     channelsSkippedExcluded: 0,
+    channelsSkippedInactive: 0,
     channelsErrored: 0,
     messagesUpserted: 0,
     threadsFetched: 0,
@@ -97,6 +102,51 @@ export async function syncWorkspace(
   stats.channelsListed = remoteChannels.length;
   log(`Found ${remoteChannels.length} channels.`);
 
+  const lastFullScanIso = store.getMeta("last_full_scan_at");
+  let effectiveFullScan =
+    Boolean(options.channelFilter) ||
+    shouldRunFullScan(
+      lastFullScanIso,
+      Boolean(options.fullScan),
+      options.config.fullScanIntervalDays,
+      nowMs,
+    );
+
+  let searchActiveIds = new Set<string>();
+  if (!effectiveFullScan) {
+    const searchSinceMs = computeSearchSinceMs(
+      store.getMeta("last_sync_at") ?? lastFullScanIso,
+      nowMs,
+    );
+    const afterUtcDate = formatUtcDate(searchSinceMs);
+    try {
+      searchActiveIds = await client.searchActiveChannelIds(
+        afterUtcDate,
+        Math.floor(searchSinceMs / 1_000),
+      );
+      log(
+        `Fast scan: search.messages (after:${afterUtcDate}) found ${searchActiveIds.size} active channel(s); also polling channels active within ${options.config.activeWindowDays}d and newly discovered channels.`,
+      );
+    } catch (error) {
+      if (error instanceof SlackApiError && error.kind === "auth") {
+        throw error;
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      log(
+        `WARNING: search.messages failed (${detail}); falling back to full scan.`,
+      );
+      effectiveFullScan = true;
+    }
+  } else if (!options.channelFilter) {
+    log(
+      options.fullScan
+        ? "Full scan requested via --full-scan: checking all non-archived channels."
+        : `Weekly full scan due (interval: ${options.config.fullScanIntervalDays}d): checking all non-archived channels.`,
+    );
+  }
+
+  stats.scanMode = effectiveFullScan ? "full" : "fast";
+
   for (let index = 0; index < remoteChannels.length; index += 1) {
     const channel = remoteChannels[index];
     if (!channel?.id) {
@@ -147,6 +197,19 @@ export async function syncWorkspace(
 
     if (storedChannel.fullySynced) {
       stats.channelsSkippedArchived += 1;
+      continue;
+    }
+
+    if (
+      !effectiveFullScan &&
+      !shouldPollChannelInFastMode(
+        storedChannel,
+        searchActiveIds,
+        options.config.activeWindowDays,
+        nowMs,
+      )
+    ) {
+      stats.channelsSkippedInactive += 1;
       continue;
     }
 
@@ -229,10 +292,54 @@ export async function syncWorkspace(
   }
 
   if (!options.dryRun) {
-    store.setMeta("last_sync_at", new Date(nowMs).toISOString());
+    const isoNow = new Date(nowMs).toISOString();
+    store.setMeta("last_sync_at", isoNow);
+    if (effectiveFullScan && !options.channelFilter) {
+      store.setMeta("last_full_scan_at", isoNow);
+    }
   }
 
   return stats;
+}
+
+export function shouldRunFullScan(
+  lastFullScanIso: string | null,
+  forceFullScan: boolean,
+  intervalDays: number,
+  nowMs: number,
+): boolean {
+  if (forceFullScan || intervalDays <= 0 || !lastFullScanIso) {
+    return true;
+  }
+  const parsed = Date.parse(lastFullScanIso);
+  if (!Number.isFinite(parsed)) {
+    return true;
+  }
+  return nowMs - parsed >= intervalDays * MS_PER_DAY;
+}
+
+export function shouldPollChannelInFastMode(
+  channel: StoredChannel,
+  searchActiveIds: ReadonlySet<string>,
+  activeWindowDays: number,
+  nowMs: number,
+): boolean {
+  if (channel.lastSyncedAt === null) {
+    return true;
+  }
+  if (searchActiveIds.has(channel.id)) {
+    return true;
+  }
+  if (!channel.lastMessageTs || activeWindowDays <= 0) {
+    return false;
+  }
+  const lastMsgSec = Number.parseFloat(channel.lastMessageTs);
+  if (!Number.isFinite(lastMsgSec)) {
+    return false;
+  }
+  const activeCutoffSec =
+    Math.floor(nowMs / 1_000) - activeWindowDays * SECONDS_PER_DAY;
+  return lastMsgSec >= activeCutoffSec;
 }
 
 export function verifyTokenIdentity(
@@ -447,6 +554,29 @@ function mergeRenderStats(
   target.filesWritten += addition.filesWritten;
   target.filesUnchanged += addition.filesUnchanged;
   target.filesRemoved += addition.filesRemoved;
+}
+
+function computeSearchSinceMs(
+  lastSyncIso: string | null,
+  nowMs: number,
+): number {
+  const defaultSince = nowMs - SEARCH_BUFFER_DAYS * MS_PER_DAY;
+  if (!lastSyncIso) {
+    return defaultSince;
+  }
+  const parsed = Date.parse(lastSyncIso);
+  if (!Number.isFinite(parsed)) {
+    return defaultSince;
+  }
+  return Math.min(parsed - SEARCH_BUFFER_DAYS * MS_PER_DAY, defaultSince);
+}
+
+function formatUtcDate(epochMs: number): string {
+  const date = new Date(Math.max(0, epochMs));
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function noopLog(): void {}

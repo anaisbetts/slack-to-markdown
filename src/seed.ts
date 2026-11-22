@@ -147,6 +147,9 @@ export async function seedFromSlackArchive(
     }
     store.setMeta("seeded_from", path.resolve(options.seedDir));
     store.setMeta("seeded_at", new Date(nowMs).toISOString());
+    if (!options.channelFilter) {
+      store.setMeta("last_full_scan_at", new Date(nowMs).toISOString());
+    }
   }
 
   log(

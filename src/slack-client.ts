@@ -43,10 +43,15 @@ export type SlackErrorKind =
   | "api"
   | "network";
 
+export type FetchLike = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
 export interface SlackClientOptions {
   token: string;
   baseUrl?: string;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: FetchLike;
   sleepImpl?: (ms: number) => Promise<void>;
   maxRetries?: number;
   onRateLimit?: (method: string, retryAfterMs: number) => void;
@@ -89,7 +94,7 @@ interface ConversationsRepliesResponse extends SlackEnvelope {
 export class SlackClient {
   private readonly token: string;
   private readonly baseUrl: string;
-  private readonly fetchImpl: typeof fetch;
+  private readonly fetchImpl: FetchLike;
   private readonly sleepImpl: (ms: number) => Promise<void>;
   private readonly maxRetries: number;
   private readonly onRateLimit?: (method: string, retryAfterMs: number) => void;

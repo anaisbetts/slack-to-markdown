@@ -11,7 +11,7 @@ import {
 } from "./config";
 import { renderDirtyDays } from "./render";
 import { seedFromSlackArchive } from "./seed";
-import { SlackClient } from "./slack-client";
+import { type FetchLike, SlackClient } from "./slack-client";
 import { ArchiveStore } from "./store";
 import { syncWorkspace } from "./sync";
 import {
@@ -59,7 +59,7 @@ export interface RunCliInput {
   argv?: string[];
   env?: Record<string, string | undefined>;
   log?: Logger;
-  fetchImpl?: typeof fetch;
+  fetchImpl?: FetchLike;
   sleepImpl?: (ms: number) => Promise<void>;
   nowMs?: number;
 }

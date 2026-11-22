@@ -499,7 +499,11 @@ function buildMessageBody(
     parts.push(resolvedText);
   }
 
+  const lowerText = resolvedText.toLowerCase();
   for (const file of payload.files) {
+    if (isFileAlreadyMentionedInText(file, lowerText)) {
+      continue;
+    }
     const formatted = formatFile(file);
     if (formatted) {
       parts.push(formatted);
@@ -529,6 +533,24 @@ function formatFile(file: SlackFile): string | null {
     return `[file: ${title}]`;
   }
   return "[file]";
+}
+
+function isFileAlreadyMentionedInText(
+  file: SlackFile,
+  lowerMessageText: string,
+): boolean {
+  if (!lowerMessageText) {
+    return false;
+  }
+  const name = file.name?.trim().toLowerCase();
+  const title = file.title?.trim().toLowerCase();
+  if (name && lowerMessageText.includes(name)) {
+    return true;
+  }
+  if (title && lowerMessageText.includes(title)) {
+    return true;
+  }
+  return false;
 }
 
 function formatAttachment(
